@@ -121,7 +121,17 @@ engine_client = AsyncLLM.from_vllm_config(
 
 #sglang上述已列出
 ```
-将tokenizer prompt转ids统一放在proxy完成，采用monkey patch的修改各自engine的generate针对请求跳过词表转换，同时也支持omni-proxy动态热加载配置不同的tokenizer.json和vocab.json。
+将tokenizer prompt转token_ids统一放在proxy内完成，下发给prefill/decode的请求中均跳过此表转换，避免请求峰值查表抢占（虽然优化点占比极低，依旧可以在288ep场景下加快3%左右的吞吐时间达到max_batch_size）
+
+```
+# sglang tokenizer_manager.py sample
+
+...
+    elif obj.input_ids is not None:
+        input_ids = obj.input_ids
+...
+
+```
 
 
 以sglang举例，在scheduler内部开有metrics_ipc_name专用的上报metrics通路，该消息在sglang内部并没有被消费，通过封装SglnagPublishe/VllmPublisher指定PULL该zmq socket管道内消息，从而获取该进程scheduler的kv metrics event
@@ -133,3 +143,34 @@ if not self.send_metrics_from_scheduler.closed:
     self.send_metrics_from_scheduler.send_pyobj(kv_metrics)
 ```
 
+# Proxy在Prefill/Decode部署下调用流程
+```
+请求由nginx分发，由入口omni_proxy_handler进入接受推理/v1/chat/completions POST请求
+
+[HTTP POST /v1/chat/completions] --> 
+
+omni_proxy_handler() 
+    -> omni_req_init(r) // 从共享内存池分配请求槽位 
+    -> ngx_http_read_client_request_body() // 读取请求体 
+
+omni_proxy_req_body_handler() // 请求体就绪回调 
+    -> omni_proxy_save_origin_body() // 保存原始 JSON body 
+    -> 如果有多模态内容且有 encode 节点: 
+        omni_proxy_schedule_encode() // 最小负载选择 encode 节点 
+            -> encoder subrequest // 发送到 encode 节点处理 
+            -> [回调] omni_proxy_begin_tokenization() 
+    -> 否则: omni_proxy_begin_tokenization() // 直接进入 tokenization
+
+
+Tokenizer 处理：omni_proxy_begin_tokenization (ngx_http_omni_proxy_module.c:348)
+
+omni_proxy_begin_tokenization() 
+    -> 如果没有配置 tokenizer: 直接跳到 APC 匹配 
+    -> 如果有 tokenizer: 
+        req->tokenizer_req.input_data = 原始 JSON 
+        分配缓冲区: -> 
+        prompt, input_ids, block_hashes omni_tokenizer_worker_submit(slot_index) 
+        // 通过 pipe 提交给 tokenizer 工作线程
+
+
+```
