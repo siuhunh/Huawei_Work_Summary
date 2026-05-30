@@ -173,4 +173,59 @@ omni_proxy_begin_tokenization()
         // 通过 pipe 提交给 tokenizer 工作线程
 
 
+HTTP POST /v1/chat/completions
+
+--->
+
+omni_proxy_handler() // 分配omni_req_t，读取请求体
+
+-->
+
+omni_proxy_req_body_handler() // 保存原始req body，分配请求体槽位；
+
+-->
+
+omni_proxy_begin_tokenization() 
+
+--> 提交到tokenizer线程
+
+--> [Tokenizer Worker Thread]，epoll捕获 --> tokenizer --> block hashes
+
+ngx_omni_tokenizer_pipe_handler() // 记录token数
+
+-->
+
+omni_proxy_post_tokenized() //prefill radix tree做乐观匹配记录matched_depths，即最大深度
+
+--> status: PHASE_PREFILL_WAITING_SCHEDULE --> 1ms定时器，master worker线程进行调度 
+
+omni_proxy_schedule_prefill()
+
+--> KV-Aware-Routing 算法匹配 --> status: PHASE_PREFILL_SCHEDULED
+
+-->
+
+ngx_http_prefill_wakeup() // 定时器监控，status: PHASE_PREFILL_SCHEDULED 状态请求唤醒调度，创建sub_request实际发起调度（插入max_token = 1， stream = false；首token和非多模态场景）
+
+--> status: PHASE_PREFILLING --> prefill完成，回调修改为 status: PHASE_PREFILLED 表示prefil完成。
+
+--> 回调主Worker感知，选择decode
+
+--> status: PHASE_DECODE_WAITING_SCHEDULE
+
+--> 1ms timer ticker
+
+omni_proxy_scheduler_decode() // LPT排序装箱 --> Group约束（同一个集群，涉及设备架构等物理约束） --> kv-aware-routing 负载选取路由
+
+--> status: PHASE_DECODE_SCHEDULED
+
+ngx_http_decode_wakeup() //启动decode upstream，注入KV Transfer Params
+
+--> status: PHASE_DECODING // 流式响应等待返回
+
+--> 收到推理终止EoT推理完成 status: PHASED_DECODED
+
+omni_proxy_main_req_cleanup() // 请求完成，释放PHASED_DECODED计数，请求槽位清空
+
+
 ```
