@@ -37,7 +37,7 @@ graph TD
 
 ```mermaid
 graph TD
-    A[SDK] -->|POST: /exec <br> Header: X-Sandbox-Signed-Route| B[Cluster Ingress :8082]
+    A[SDK] -->|POST: /exec <br> Header: X-Sandbox-Signed-Route| B[Cluster Ingress/Omni-proxy :8082]
     B -->|LUA验证: <br> 1.HMAC-SHA256签名验证 <br> 2.路由过期检查 <br> 3.路由重放检查 <br> 4. 路由到指定Pod IP| C[Sandbox-Agent :9001, sidecar容器]
     C --> |1. create_sandbox <br> 2. create signed_route <br> 3. 调用k8s接口拉起pod,等待STATUS=READY <br> 4. return Signed_route |D[Runtime-Agent :17901, runtime容器]
     D --> |原路返回|C --> B --> A
